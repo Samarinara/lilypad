@@ -11,6 +11,11 @@ public:
     void setHandler(CefHandler* handler) { m_handler = handler; }
     CefHandler* handler() { return m_handler; }
 
+    void setInputEnabled(bool enabled);
+    void setRenderEnabled(bool enabled);
+    bool inputEnabled() const { return m_inputEnabled; }
+    bool renderEnabled() const { return m_renderEnabled; }
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
@@ -20,7 +25,10 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     CefHandler* m_handler = nullptr;
+    bool m_inputEnabled  = true;
+    bool m_renderEnabled = true;
 };

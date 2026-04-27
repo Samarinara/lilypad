@@ -1,6 +1,7 @@
 #include <QApplication>
-#include <QStandardPaths>
 #include <QTimer>
+#include <clocale>
+#include <cstdlib>
 #include "include/cef_app.h"
 #include "include/cef_browser_process_handler.h"
 #include "mainwindow.h"
@@ -13,12 +14,6 @@ public:
     void OnBeforeCommandLineProcessing(
         const CefString& process_type,
         CefRefPtr<CefCommandLine> command_line) override {
-        command_line->AppendSwitch("disable-gpu");
-        command_line->AppendSwitch("disable-software-rasterizer");
-        command_line->AppendSwitch("disable-gpu-compositing");
-        command_line->AppendSwitch("disable-gpu-rasterization");
-        command_line->AppendSwitch("disable-software-webgl");
-        command_line->AppendSwitch("ignore-gpu-blocklist");
         command_line->AppendSwitch("single-process");
     }
 
@@ -35,23 +30,28 @@ int main(int argc, char *argv[]){
 
     CefSettings settings;
     settings.no_sandbox = true;
+    settings.windowless_rendering_enabled = false;
 
-    const std::string cache_dir =
-        QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
-            .toStdString() + "/lilypad";
+    // Use $HOME/.cache/lilypad as the cache dir. QStandardPaths isn't
+    // available yet (QApplication hasn't been constructed), so derive it
+    // from the environment directly.
+    const char* home = std::getenv("HOME");
+    const std::string cache_dir = std::string(home ? home : "/tmp") + "/.cache/lilypad";
     CefString(&settings.root_cache_path).FromString(cache_dir);
 
     CefRefPtr<QCefApp> app(new QCefApp);
     if (!CefInitialize(main_args, settings, app, nullptr))
         return 1;
 
+    // QApplication must come after CefInitialize. Qt's constructor calls
+    // setlocale(LC_ALL, "") which resets the locale; restore "C" immediately
+    // so Blink's locale DCHECK passes.
     QApplication qapp(argc, argv);
+    std::setlocale(LC_ALL, "C");
 
     MainWindow w;
     w.show();
-    QTimer::singleShot(0, [&w](){
-        w.createBrowser("https://polli.page");
-    });
+    w.createInitialTab();
 
     QTimer cef_timer;
     QObject::connect(&cef_timer, &QTimer::timeout, [](){
