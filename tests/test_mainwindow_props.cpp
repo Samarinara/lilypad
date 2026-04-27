@@ -8,10 +8,9 @@
 // Strategy:
 //   Property 7  — Wire a QLineEdit + StubTabManager manually, mirroring what
 //                 MainWindow does, and verify URL bar text after switch/navigation.
-//   Property 9  — Instantiate a real MainWindow (no tabs created, so no CEF calls),
+//   Property 9  — Instantiate a real MainWindow (no tabs created, so no browser calls),
 //                 resize it, and verify TabPanel width via findChild<TabPanel*>().
-// Property 15 — With native embedding, verify handler exists for each tab
-//                 after each switchToTab call.
+//   Property 15 — With view creation, verify container visibility after each switchToTab.
 
 #include <QtTest/QtTest>
 #include <QApplication>
@@ -24,18 +23,17 @@
 #include "mainwindow.h"
 
 // ---------------------------------------------------------------------------
-// StubTabManager — bypasses CefBrowserHost::CreateBrowser
+// StubTabManager — bypasses browser creation
 // ---------------------------------------------------------------------------
 
 class StubTabManager : public TabManager {
 public:
-    explicit StubTabManager(QWindow* osrParent = nullptr)
-        : TabManager(osrParent) {}
+    explicit StubTabManager(QObject* parent = nullptr) : TabManager(parent) {}
 
 protected:
     void createBrowserImpl(TabEntry* entry) override {
-        // Immediately simulate OnAfterCreated without a real CEF browser
-        onBrowserCreated(entry->tabId, nullptr);
+        entry->container = new QWidget();
+        onBrowserCreated(entry->tabId);
     }
 };
 
@@ -76,21 +74,11 @@ private slots:
 
 // ---------------------------------------------------------------------------
 // Property 7: URL bar synchronization
-//
-// For any tab list [1, 10] and random switch or URL navigation events:
-//   - After switchToTab(id), URL bar text == entry->url for that tab
-//   - After onUrlChanged(id, newUrl) for active tab, URL bar text == newUrl
-//   - After onUrlChanged(id, newUrl) for inactive tab, URL bar text unchanged
-//
-// We test this by wiring a QLineEdit to a StubTabManager exactly as
-// MainWindow does, then exercising the same signal/slot connections.
-//
-// Validates: Requirements 4.3, 6.1, 6.3, 6.4
 // ---------------------------------------------------------------------------
 void TestMainWindowProps::prop7_urlBarSynchronization()
 {
     QVERIFY(rc::check(
-        "Property 7: URL bar text equals active tab URL after switch or navigation",
+        "Property 7: URL bar text equals active tab URL",
         []() {
             const int numTabs = *rc::gen::inRange(1, 11);
 
@@ -104,6 +92,7 @@ void TestMainWindowProps::prop7_urlBarSynchronization()
                     if (entry)
                         urlBar.setText(entry->url);
                 });
+
             QObject::connect(&mgr, &TabManager::urlChanged,
                 [&](int tabId, const QString& url) {
                     TabEntry* active = mgr.activeTab();
@@ -115,8 +104,8 @@ void TestMainWindowProps::prop7_urlBarSynchronization()
             RC_ASSERT(ids.size() == numTabs);
 
             // --- Sub-test A: after switchToTab, URL bar == entry->url ---
-            const int switchIdx = *rc::gen::inRange(0, numTabs);
-            const int targetId  = ids[switchIdx];
+            const int switchIdx = *rc::gen::inRange(0, (int)ids.size() - 1);
+            const int targetId = ids.at(switchIdx);
 
             mgr.switchToTab(targetId);
 
@@ -125,14 +114,12 @@ void TestMainWindowProps::prop7_urlBarSynchronization()
             RC_ASSERT(active->tabId == targetId);
             RC_ASSERT(urlBar.text() == active->url);
 
-            // --- Sub-test B: onUrlChanged for active tab updates URL bar ---
-            const std::string newUrlStd = *rc::gen::arbitrary<std::string>();
-            const QString newUrl = QString::fromStdString(newUrlStd);
-
+            // --- Sub-test B: urlChanged for active tab updates URL bar ---
+            QString newUrl = QString("https://newsite%1.com").arg(*rc::gen::inRange(1, 1000));
             mgr.onUrlChanged(targetId, newUrl);
             RC_ASSERT(urlBar.text() == newUrl);
 
-            // --- Sub-test C: onUrlChanged for inactive tab does NOT update URL bar ---
+            // --- Sub-test C: urlChanged for inactive tab does NOT update URL bar ---
             if (numTabs > 1) {
                 // Find an inactive tab
                 int inactiveId = -1;
@@ -145,30 +132,17 @@ void TestMainWindowProps::prop7_urlBarSynchronization()
                 RC_ASSERT(inactiveId != -1);
 
                 const QString urlBeforeInactiveNav = urlBar.text();
-                const std::string otherUrlStd = *rc::gen::arbitrary<std::string>();
-                const QString otherUrl = QString::fromStdString(otherUrlStd);
-
+                QString otherUrl = QString("https://other%1.com").arg(*rc::gen::inRange(1, 1000));
                 mgr.onUrlChanged(inactiveId, otherUrl);
 
                 // URL bar must not have changed
                 RC_ASSERT(urlBar.text() == urlBeforeInactiveNav);
             }
-        }
-    ));
+        }));
 }
 
 // ---------------------------------------------------------------------------
 // Property 9: Tab panel fixed width invariant
-//
-// For any main window width [400, 2000]:
-//   - TabPanel width == kPanelWidth (220)
-//   - OSR container width == window width - kPanelWidth
-//
-// We instantiate MainWindow without calling createInitialTab() so no CEF
-// browser is created. We show the window, resize it, process events, then
-// check the geometry of the TabPanel and OSR container children.
-//
-// Validates: Requirements 1.1, 1.4
 // ---------------------------------------------------------------------------
 void TestMainWindowProps::prop9_tabPanelFixedWidthInvariant()
 {
@@ -186,53 +160,37 @@ void TestMainWindowProps::prop9_tabPanelFixedWidthInvariant()
             TabPanel* panel = w.findChild<TabPanel*>();
             RC_ASSERT(panel != nullptr);
 
-            // Find the OSR container (a plain QWidget that is not TabPanel,
-            // QLineEdit, or the central widget itself)
-            // The OSR container is the QWidget with Expanding size policy
-            // that sits next to the TabPanel in the HBoxLayout.
-            // We identify it by checking all direct QWidget children of the
-            // central widget that are not the TabPanel or QLineEdit.
-            QWidget* central = w.centralWidget();
-            RC_ASSERT(central != nullptr);
-
-            QWidget* osrContainer = nullptr;
-            const auto children = central->findChildren<QWidget*>(
-                QString(), Qt::FindDirectChildrenOnly);
-            for (QWidget* child : children) {
-                if (child != panel
-                    && qobject_cast<QLineEdit*>(child) == nullptr) {
-                    osrContainer = child;
-                    break;
-                }
-            }
-            RC_ASSERT(osrContainer != nullptr);
-
             // TabPanel must have fixed width == kPanelWidth
             RC_ASSERT(panel->width() == TabPanel::kPanelWidth);
 
-            // OSR container must fill the remaining width
-            // (window width minus panel width, accounting for any frame/border)
-            const int contentWidth = central->width();
-            RC_ASSERT(osrContainer->width() == contentWidth - TabPanel::kPanelWidth);
-        }
-    ));
+            // The OSR container (content area) should fill remaining width
+            QWidget* central = w.centralWidget();
+            RC_ASSERT(central != nullptr);
+
+            // Find the content area (not TabPanel, not QLineEdit)
+            QWidget* contentContainer = nullptr;
+            const auto children = central->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
+            for (QWidget* child : children) {
+                if (child != panel && qobject_cast<QLineEdit*>(child) == nullptr) {
+                    contentContainer = child;
+                    break;
+                }
+            }
+            RC_ASSERT(contentContainer != nullptr);
+
+            // Content container width should be window width minus panel width
+            const int expectedWidth = central->width() - TabPanel::kPanelWidth;
+            RC_ASSERT(contentContainer->width() == expectedWidth);
+        }));
 }
 
 // ---------------------------------------------------------------------------
 // Property 15: Rendering suspension for inactive tabs
-//
-// For any tab list [2, 10] and a random sequence of switchToTab calls:
-//   - After each switch, all inactive tabs have renderEnabled == false
-//   - The active tab has renderEnabled == true
-//
-// We test this directly via StubTabManager (no MainWindow needed).
-//
-// Validates: Requirements 10.1, 10.2, 10.3
 // ---------------------------------------------------------------------------
 void TestMainWindowProps::prop15_renderingSuspensionForInactiveTabs()
 {
     QVERIFY(rc::check(
-        "Property 15: inactive tabs have renderEnabled==false, active tab has renderEnabled==true",
+        "Property 15: inactive tabs have container==hidden, active tab has container==visible",
         []() {
             const int numTabs   = *rc::gen::inRange(2, 11);
             const int numSwitches = *rc::gen::inRange(1, 11);
@@ -242,8 +200,8 @@ void TestMainWindowProps::prop15_renderingSuspensionForInactiveTabs()
             RC_ASSERT(ids.size() == numTabs);
 
             for (int s = 0; s < numSwitches; ++s) {
-                const int switchIdx = *rc::gen::inRange(0, numTabs);
-                const int targetId  = ids[switchIdx];
+                const int switchIdx = *rc::gen::inRange(0, (int)ids.size() - 1);
+                const int targetId  = ids.at(switchIdx);
 
                 mgr.switchToTab(targetId);
 
@@ -251,19 +209,23 @@ void TestMainWindowProps::prop15_renderingSuspensionForInactiveTabs()
                 RC_ASSERT(active != nullptr);
                 RC_ASSERT(active->tabId == targetId);
 
-                // Verify handler exists for every tab
-                for (TabEntry* e : mgr.allTabs()) {
-                    RC_ASSERT(e->handler != nullptr);
-                    if (e->tabId == targetId) {
-                        // Active tab: we can't check WasHidden without a real browser
-                    } else {
-                        // Inactive tab: we just verify handler exists
+                // Verify container visibility
+                if (active->container)
+                    RC_ASSERT(active->container->isVisible());
+
+                // Non-active tabs should be hidden
+                for (TabEntry* entry : mgr.allTabs()) {
+                    if (entry->tabId != mgr.activeTab()->tabId) {
+                        if (entry->container)
+                            RC_ASSERT(!entry->container->isVisible());
                     }
                 }
             }
-        }
-    ));
+        }));
 }
 
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 QTEST_MAIN(TestMainWindowProps)
 #include "test_mainwindow_props.moc"

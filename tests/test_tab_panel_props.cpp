@@ -21,11 +21,12 @@
 
 class StubTabManager : public TabManager {
 public:
-    explicit StubTabManager() : TabManager(nullptr) {}
+    explicit StubTabManager(QObject* parent = nullptr) : TabManager(parent) {}
 
 protected:
     void createBrowserImpl(TabEntry* entry) override {
-        onBrowserCreated(entry->tabId, nullptr);
+        entry->container = new QWidget();
+        onBrowserCreated(entry->tabId);
     }
 };
 

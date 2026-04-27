@@ -1,15 +1,40 @@
-#include "tab_manager.h"
-#include "cef_handler.h"
-#include "include/cef_browser.h"
-#include <QEventLoop>
-#include <QTimer>
-#include <QDebug>
+// ============================================================================
+// TAB_MANAGER.CPP
+// ============================================================================
+// This file contains the implementation of TabManager's methods.
+// This is where the tab lifecycle logic lives: creating tabs,
+// closing tabs, switching tabs, handling callbacks, etc.
+// ============================================================================
 
-TabManager::TabManager(QWindow* window, QObject* parent)
-    : QObject(parent), m_window(window)
+// ============================================================================
+// INCLUDES
+// ============================================================================
+#include "tab_manager.h"
+#include "tab_entry.h"
+#include <QEventLoop>  // For waiting during closeAllTabs
+#include <QTimer>     // For creation timeout
+#include <QDebug>    // For qWarning() debugging output
+#include <QWebEngineView>
+#include <QWebEnginePage>
+#include <QVBoxLayout>
+
+// ============================================================================
+// CONSTRUCTOR
+// ============================================================================
+// Initialize a new TabManager.
+// ============================================================================
+TabManager::TabManager(QObject* parent)
+    : QObject(parent)
 {
+    // m_tabs starts empty, other members have defaults in header
 }
 
+// ============================================================================
+// DESTRUCTOR
+// ============================================================================
+// Clean up when TabManager is destroyed.
+// We need to delete all TabEntry objects we created.
+// ============================================================================
 TabManager::~TabManager()
 {
     for (TabEntry* entry : m_tabs) {
@@ -18,34 +43,51 @@ TabManager::~TabManager()
     m_tabs.clear();
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+// ============================================================================
+// ============================================================================
+// SECTION: PUBLIC API - Tab Operations
+// ============================================================================
+// ============================================================================
 
+// ============================================================================
+// METHOD: createTab
+// ============================================================================
+// Create a new browser tab with the given URL.
+//
+// STEPS:
+// 1. Check tab limit (can't have more than 50 tabs)
+// 2. Create TabEntry with unique ID
+// 3. Start a creation timeout timer
+// 4. Create QWebEngineView
+// 5. Make this the active tab
+// 6. Notify listeners
+// ============================================================================
 int TabManager::createTab(const QString& url)
 {
+    // Check the limit first - can't have more than 50 tabs
     if (m_tabs.size() >= kMaxTabs)
         return -1;
 
+    // Create the tab entry (data structure for this tab)
     TabEntry* entry = new TabEntry();
+
+    // Assign a unique ID and store the URL
     int tabId = m_nextTabId++;
     entry->tabId = tabId;
     entry->url   = url;
 
-    entry->handler = new CefHandler(m_window, this);
-    entry->handler->tabId        = tabId;
-    entry->handler->m_tabManager = this;
-
+    // Add to our list of tabs
     m_tabs.append(entry);
 
-    // Start creation timeout timer
+    // ============================================================================
+    // CREATION TIMEOUT TIMER
+    // ============================================================================
     QTimer* timer = new QTimer(this);
     timer->setSingleShot(true);
     timer->setInterval(kCreationTimeoutMs);
     m_creationTimers[tabId] = timer;
 
     connect(timer, &QTimer::timeout, this, [this, tabId]() {
-        // onBrowserCreated has not fired — treat as initialization failure
         qWarning() << "TabManager: browser creation timed out for tab" << tabId;
         m_creationTimers.remove(tabId);
         removeTabEntry(tabId);
@@ -53,36 +95,48 @@ int TabManager::createTab(const QString& url)
     });
     timer->start();
 
-    // Create the CEF browser (native embedding)
+    // ============================================================================
+    // CREATE THE QWebEngineView
+    // ============================================================================
     createBrowserImpl(entry);
 
-    // Make this the active tab
+    // ============================================================================
+    // MAKE THIS THE ACTIVE TAB
+    // ============================================================================
     switchToTab(tabId);
 
+    // Notify UI that we created a new tab
     emit tabCreated(tabId);
     return tabId;
 }
 
+// ============================================================================
+// METHOD: closeTab
+// ============================================================================
+// Close a specific tab.
+// ============================================================================
 void TabManager::closeTab(int tabId)
 {
     int idx = indexOfTab(tabId);
     if (idx < 0)
         return;
 
-    // Last-tab guard: ensure there is always at least one tab
+    // ============================================================================
+    // LAST TAB GUARD
+    // ============================================================================
     if (m_tabs.size() == 1) {
         createTab("about:blank");
     }
 
-    // Determine successor before removing
+    // ============================================================================
+    // DETERMINE SUCCESSOR BEFORE REMOVING
+    // ============================================================================
     if (tabId == m_activeTabId) {
-        // Re-find index after potential createTab above
         int currentIdx = indexOfTab(tabId);
         int successorIdx = (currentIdx > 0) ? currentIdx - 1 : 0;
-        // Make sure we don't pick the tab being closed
+
         TabEntry* successor = m_tabs[successorIdx];
         if (successor->tabId == tabId) {
-            // Edge case: pick the other one
             successorIdx = (successorIdx + 1 < m_tabs.size()) ? successorIdx + 1 : successorIdx - 1;
             successor = m_tabs[successorIdx];
         }
@@ -92,18 +146,20 @@ void TabManager::closeTab(int tabId)
     // Mark as closing so callbacks are ignored
     m_closingTabs.insert(tabId);
 
+    // Get the entry
     TabEntry* entry = tabById(tabId);
     if (!entry)
         return;
 
-    if (entry->handler && entry->handler->GetBrowser()) {
-        entry->handler->GetBrowser()->GetHost()->CloseBrowser(true);
-    } else {
-        // Browser was never initialized — clean up directly
-        onBeforeClose(tabId);
-    }
+    // Close the view
+    onBeforeClose(tabId);
 }
 
+// ============================================================================
+// METHOD: switchToTab
+// ============================================================================
+// Switch to a different tab.
+// ============================================================================
 void TabManager::switchToTab(int tabId)
 {
     TabEntry* entry = tabById(tabId);
@@ -113,25 +169,32 @@ void TabManager::switchToTab(int tabId)
     if (tabId == m_activeTabId)
         return;
 
+    // Save old tab ID for signal
     int oldTabId = m_activeTabId;
 
-    // Deactivate old active tab
+    // ============================================================================
+    // DEACTIVATE OLD TAB
+    // ============================================================================
     if (oldTabId != -1) {
         TabEntry* oldEntry = tabById(oldTabId);
         if (oldEntry)
             oldEntry->deactivate();
     }
 
+    // ============================================================================
+    // ACTIVATE NEW TAB
+    // ============================================================================
     m_activeTabId = tabId;
     entry->activate();
 
     emit activeTabChanged(oldTabId, tabId);
 }
 
+// ============================================================================
+// METHOD: closeAllTabs
+// ============================================================================
 void TabManager::closeAllTabs()
 {
-    // Initiate close on all tabs
-    // Collect IDs first since m_tabs will be modified during callbacks
     QList<int> ids;
     for (TabEntry* e : m_tabs)
         ids.append(e->tabId);
@@ -140,16 +203,12 @@ void TabManager::closeAllTabs()
         TabEntry* entry = tabById(id);
         if (!entry)
             continue;
+
         m_closingTabs.insert(id);
-        if (entry->handler && entry->handler->GetBrowser()) {
-            entry->handler->GetBrowser()->GetHost()->CloseBrowser(true);
-        } else {
-            onBeforeClose(id);
-        }
+        onBeforeClose(id);
     }
 
-    // Pump the event loop until all OnBeforeClose callbacks have fired,
-    // or until the safety timeout expires.
+    // Wait for all tabs to close
     if (!m_tabs.isEmpty()) {
         QEventLoop loop;
         QTimer safetyTimer;
@@ -157,6 +216,7 @@ void TabManager::closeAllTabs()
         safetyTimer.setInterval(5000);
 
         connect(&safetyTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+
         QMetaObject::Connection conn = connect(this, &TabManager::tabClosed, this, [&]() {
             if (m_tabs.isEmpty())
                 loop.quit();
@@ -164,18 +224,18 @@ void TabManager::closeAllTabs()
 
         safetyTimer.start();
         loop.exec();
-
         disconnect(conn);
     }
 }
 
-TabEntry* TabManager::activeTab() const
-{
+// ============================================================================
+// ACCESSOR METHODS
+// ============================================================================
+TabEntry* TabManager::activeTab() const {
     return tabById(m_activeTabId);
 }
 
-TabEntry* TabManager::tabById(int tabId) const
-{
+TabEntry* TabManager::tabById(int tabId) const {
     for (TabEntry* e : m_tabs) {
         if (e->tabId == tabId)
             return e;
@@ -183,34 +243,32 @@ TabEntry* TabManager::tabById(int tabId) const
     return nullptr;
 }
 
-int TabManager::tabCount() const
-{
+int TabManager::tabCount() const {
     return m_tabs.size();
 }
 
-QList<TabEntry*> TabManager::allTabs() const
-{
+QList<TabEntry*> TabManager::allTabs() const {
     return m_tabs;
 }
 
-// ---------------------------------------------------------------------------
-// CefHandler callbacks
-// ---------------------------------------------------------------------------
+// ============================================================================
+// ============================================================================
+// SECTION: CALLBACK METHODS
+// ============================================================================
+// ============================================================================
 
-void TabManager::onBrowserCreated(int tabId, CefRefPtr<CefBrowser> /*browser*/)
+void TabManager::onBrowserCreated(int tabId)
 {
     TabEntry* entry = tabById(tabId);
     if (!entry)
         return;
 
-    // Cancel and delete the creation timeout timer
     if (m_creationTimers.contains(tabId)) {
         QTimer* timer = m_creationTimers.take(tabId);
         timer->stop();
         timer->deleteLater();
     }
 
-    // If this tab is currently active, activate it now that the browser is ready
     if (tabId == m_activeTabId) {
         entry->activate();
     }
@@ -223,7 +281,6 @@ void TabManager::onBeforeClose(int tabId)
         return;
 
     m_closingTabs.remove(tabId);
-
     removeTabEntry(tabId);
 }
 
@@ -279,12 +336,13 @@ void TabManager::onUrlChanged(int tabId, const QString& url)
     emit urlChanged(tabId, url);
 }
 
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
+// ============================================================================
+// ============================================================================
+// SECTION: Private Helpers
+// ============================================================================
+// ============================================================================
 
-int TabManager::indexOfTab(int tabId) const
-{
+int TabManager::indexOfTab(int tabId) const {
     for (int i = 0; i < m_tabs.size(); ++i) {
         if (m_tabs[i]->tabId == tabId)
             return i;
@@ -300,31 +358,63 @@ void TabManager::removeTabEntry(int tabId)
 
     TabEntry* entry = m_tabs.takeAt(idx);
 
-    // Cancel any pending creation timer
     if (m_creationTimers.contains(tabId)) {
         QTimer* timer = m_creationTimers.take(tabId);
         timer->stop();
         timer->deleteLater();
     }
 
-    // The handler is ref-counted by CEF and will be released when the
-    // CefRefPtr inside CefHandler goes out of scope.
-    delete entry;
+    // Properly clean up Qt WebEngine resources
+    // Delete container first (which owns the QWebEngineView via layout)
+    if (entry->container) {
+        entry->container->deleteLater();
+        entry->container = nullptr;
+    }
+    entry->view = nullptr;  // view is deleted when container is deleted
 
+    delete entry;
     emit tabClosed(tabId);
 }
 
+// ============================================================================
+// METHOD: createBrowserImpl
+// ============================================================================
 void TabManager::createBrowserImpl(TabEntry* entry)
 {
-    CefWindowInfo windowInfo;
+    // Create the QWebEngineView
+    entry->view = new QWebEngineView();
 
-    QRect rect = m_window->geometry();
-    cef_rect_t cefRect(0, 0, rect.width(), rect.height());
-    windowInfo.SetAsChild(static_cast<CefWindowHandle>(m_window->winId()), cefRect);
+    // Create container widget
+    entry->container = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(entry->container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(entry->view);
+    entry->container->setLayout(layout);
 
-    CefBrowserSettings settings;
+    // Load the URL
+    entry->view->load(QUrl(entry->url));
 
-    CefBrowserHost::CreateBrowser(windowInfo, entry->handler,
-                                  entry->url.toStdString(), settings,
-                                  nullptr, nullptr);
+    // Connect signals
+    QWebEnginePage* page = entry->view->page();
+
+    QObject::connect(page, &QWebEnginePage::titleChanged, [this, entry](const QString& title) {
+        onTitleChanged(entry->tabId, title);
+    });
+
+    QObject::connect(page, &QWebEnginePage::urlChanged, [this, entry](const QUrl& url) {
+        onUrlChanged(entry->tabId, url.toString());
+    });
+
+    QObject::connect(page, &QWebEnginePage::loadStarted, [this, entry]() {
+        onLoadingStateChanged(entry->tabId, true);
+    });
+
+    QObject::connect(page, &QWebEnginePage::loadFinished, [this, entry](bool) {
+        onLoadingStateChanged(entry->tabId, false);
+    });
+
+    // Notify MainWindow that the view container is ready
+    emit tabViewCreated(entry->tabId, entry->container);
+
+    onBrowserCreated(entry->tabId);
 }
