@@ -1,12 +1,16 @@
 // ============================================================================
 // TAB_ENTRY.H
 // ============================================================================
-// This file defines the TabEntry structure — a simple data container that holds
+// This file defines the TabEntry class — a QObject that holds
 // all the information for ONE browser tab in our Lilypad browser.
 //
-// Think of TabEntry like the "tab" concept in Chrome: each tab has a title,
-// URL (web address), favicon (little website icon), and a reference to the actual
-// browser showing that web page.
+// TabEntry is now a QObject with Q_PROPERTY macros so it can be
+// accessed from QML. Each tab tracks:
+// - Unique ID (tabId) - constant after creation
+// - Page title shown in tab
+// - Current URL (web address)
+// - Favicon (small icon from website)
+// - Loading state (spinning wheel while page loads)
 // ============================================================================
 
 #ifndef LILYPAD_TAB_ENTRY_H
@@ -15,93 +19,97 @@
 // ============================================================================
 // QT INCLUDES
 // ============================================================================
-// Qt is a cross-platform GUI framework. It handles windows, widgets, layouts,
-// signals/slots, and more. Lilypad uses Qt for its UI.
-//
-// These includes give us QString (text strings) and QPixmap (images).
-// ============================================================================
-
-#include <QString>   // Qt's string class — like std::string but with Unicode support
-#include <QPixmap>   // Qt's image class — for favicons (little website icons)
-#include <QWebEngineView>
+#include <QObject>
+#include <QString>
+#include <QPixmap>
+#include <QVariant>
 
 // ============================================================================
-// STRUCT: TabEntry
+// CLASS: TabEntry
 // ============================================================================
-// A struct in C++ is essentially a class where members are public by default.
-// We use struct here because TabEntry is just a data container — it doesn't
-// have complex behavior, just data and two simple methods.
-//
-// In a web browser, each tab needs to track:
-// - Unique ID (tabId)
-// - Page title shown in tab
-// - Current URL (web address)
-// - Favicon (small icon from website)
-// - Loading state (spinning wheel while page loads)
-// - View (the QWebEngineView showing the web page)
+// A QObject that represents one browser tab.
+// Inherits QObject for signals/slots and QML compatibility.
 // ============================================================================
-struct TabEntry {
+class TabEntry : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int tabId READ tabId CONSTANT)
+    Q_PROPERTY(QString title READ title NOTIFY titleChanged)
+    Q_PROPERTY(QString url READ url NOTIFY urlChanged)
+    Q_PROPERTY(QPixmap favicon READ favicon NOTIFY faviconChanged)
+    Q_PROPERTY(QString faviconUrl READ faviconUrl NOTIFY faviconUrlChanged)
+    Q_PROPERTY(bool isLoading READ isLoading NOTIFY loadingChanged)
+
+public:
+    explicit TabEntry(QObject* parent = nullptr);
+
     // ------------------------------------------------------------------------
-    // MEMBER VARIABLES
+    // Q_PROPERTY READERS
     // ------------------------------------------------------------------------
-    // These are the "fields" or "properties" of each tab.
+    int tabId() const { return m_tabId; }
+    QString title() const { return m_title; }
+    QString url() const { return m_url; }
+    QPixmap favicon() const { return m_favicon; }
+    QString faviconUrl() const { return m_faviconUrl; }
+    bool isLoading() const { return m_isLoading; }
+
     // ------------------------------------------------------------------------
-
-    // Unique identifier for this tab. Assigned by TabManager when created.
-    // Like Chrome's tab ID — used to find and operate on specific tabs.
-    // Starts at -1 (invalid) until properly assigned.
-    int tabId = -1;
-
-    // The page title, displayed in the tab bar. This typically comes from
-    // the web page's <title> HTML tag. Example: "Google" for google.com
-    QString title;
-
-    // The current URL (web address) being displayed in this tab.
-    // Examples: "https://google.com", "https://youtube.com/watch?v=..."
-    QString url;
-
-    // The favicon — a small image (usually 16x16 or 32x32 pixels) that
-    // represents the website. Loaded from the website's /favicon.ico
-    // or specified in the page's <link rel="icon">.
-    QPixmap favicon;
-
-    // Whether the page is currently loading. When true, we show a
-    // spinning animation in the tab to indicate activity.
-    // This is the same "loading spinner" you see in browser tabs.
-    bool isLoading = false;
-
-    // ============================================================================
-    // QWebEngineView: THE BROWSER VIEW
-    // ============================================================================
-    // This is the Qt WebEngine view that displays the web page.
-    // QWebEngineView is a QWidget that renders web content using Chromium.
-    //
-    // Unlike CEF which required separate handler classes and manual embedding,
-    // QWebEngineView is a native Qt widget that can be directly added to layouts.
-    // ============================================================================
-    QWebEngineView* view = nullptr;
-
-    // ============================================================================
-    // Qt CONTAINER WIDGET
-    // ============================================================================
-    // The Qt widget that contains the web view.
-    // This allows us to show/hide the tab in the layout.
-    // ============================================================================
-    QWidget* container = nullptr;
+    // SETTERS (called by TabManager or QML)
+    // ------------------------------------------------------------------------
+    Q_INVOKABLE void setTabId(int id) { m_tabId = id; }
+    Q_INVOKABLE void setTitle(const QString& title) {
+        if (m_title != title) {
+            m_title = title;
+            emit titleChanged();
+        }
+    }
+    Q_INVOKABLE void setUrl(const QString& url) {
+        if (m_url != url) {
+            m_url = url;
+            emit urlChanged();
+        }
+    }
+    Q_INVOKABLE void setFavicon(const QPixmap& favicon) {
+        if (m_favicon.cacheKey() != favicon.cacheKey()) {
+            m_favicon = favicon;
+            emit faviconChanged();
+        }
+    }
+    Q_INVOKABLE void setFaviconUrl(const QString& faviconUrl) {
+        if (m_faviconUrl != faviconUrl) {
+            m_faviconUrl = faviconUrl;
+            emit faviconUrlChanged();
+        }
+    }
+    Q_INVOKABLE void setIsLoading(bool loading) {
+        if (m_isLoading != loading) {
+            m_isLoading = loading;
+            emit loadingChanged();
+        }
+    }
 
     // ------------------------------------------------------------------------
     // METHODS
     // ------------------------------------------------------------------------
-    // Two simple methods to activate/deactivate this tab.
-    // Called when switching between tabs.
+    // Note: activate/deactivate are no longer needed as QML handles visibility
+    // via the StackLayout or Loader
+
+signals:
+    void titleChanged();
+    void urlChanged();
+    void faviconChanged();
+    void faviconUrlChanged();
+    void loadingChanged();
+
+private:
     // ------------------------------------------------------------------------
-
-    // Mark this tab as active (visible, receiving input).
-    // When a tab becomes active, we show its container.
-    void activate();
-
-    // Mark this tab as inactive (hidden, not receiving input).
-    // When switching away from a tab, we hide its container.
-    void deactivate();
+    // MEMBER VARIABLES
+    // ------------------------------------------------------------------------
+    int m_tabId = -1;
+    QString m_title;
+    QString m_url;
+    QPixmap m_favicon;
+    QString m_faviconUrl;
+    bool m_isLoading = false;
 };
+
 #endif // LILYPAD_TAB_ENTRY_H

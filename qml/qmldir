@@ -1,0 +1,7 @@
+module qml
+HamburgerMenu 1.0 HamburgerMenu.qml
+SearchButton 1.0 SearchButton.qml
+TabEntry 1.0 TabEntry.qml
+TabPanel 1.0 TabPanel.qml
+UrlBar 1.0 UrlBar.qml
+UrlBarContainer 1.0 UrlBarContainer.qml

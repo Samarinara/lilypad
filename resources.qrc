@@ -1,0 +1,16 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/Main.qml</file>
+        <file>qml/TabPanel.qml</file>
+        <file>qml/TabEntry.qml</file>
+        <file>qml/UrlBar.qml</file>
+        <file>qml/SearchButton.qml</file>
+        <file>qml/UrlBarContainer.qml</file>
+        <file>qml/HamburgerMenu.qml</file>
+        <file>qml/qmldir</file>
+        <file>qml/LilypadTheme/Theme.qml</file>
+        <file>qml/LilypadTheme/qmldir</file>
+        <file>qml/test.qml</file>
+        <file>bangs.db</file>
+    </qresource>
+</RCC>
